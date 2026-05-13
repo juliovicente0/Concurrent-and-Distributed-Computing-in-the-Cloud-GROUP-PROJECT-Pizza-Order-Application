@@ -1,0 +1,153 @@
+name: CI/CD — build, push to GHCR, deploy to Azure VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # also allow manual runs from the Actions tab
+
+env:
+  REGISTRY: ghcr.io
+  # Image name = ghcr.io/<owner>/<repo>, all lowercase (GHCR requirement)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+
+  # -------------------------------------------------------
+  # 1) Lint + sanity check (fast — runs in parallel with build)
+  # -------------------------------------------------------
+  test:
+    name: Test & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check (node --check on every .js)
+        run: |
+          find src -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Run tests
+        run: npm test --if-present
+
+  # -------------------------------------------------------
+  # 2) Build the Docker image and push it to GHCR
+  # -------------------------------------------------------
+  build-and-push:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write   # required to push to GHCR
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalise image name to lowercase
+        id: img
+        run: echo "name=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
+          # Tags: "latest" for the main branch, plus the commit SHA for traceability
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # -------------------------------------------------------
+  # 3) SSH into the Azure VM and pull the new image
+  # -------------------------------------------------------
+  deploy:
+    name: Deploy to Azure VM
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    # Only deploy on direct pushes to main or manual runs — never on PRs
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ship docker-compose.yml + nginx config to the VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key:      ${{ secrets.VPS_SSH_KEY }}
+          port:     ${{ secrets.VPS_PORT }}
+          source:   "docker-compose.yml,nginx/default.conf,transactions.sql"
+          target:   "/home/${{ secrets.VPS_USER }}/pizza-app"
+          overwrite: true
+
+      - name: Pull image and restart stack on the VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host:     ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key:      ${{ secrets.VPS_SSH_KEY }}
+          port:     ${{ secrets.VPS_PORT }}
+          script: |
+            set -euo pipefail
+            cd /home/${{ secrets.VPS_USER }}/pizza-app
+
+            # Write the .env on the fly from the repo secrets (never commit it!)
+            cat > .env <<EOF
+            NODE_ENV=production
+            PORT=8080
+            JWT_KEY=${{ secrets.JWT_KEY }}
+            DB_NAME=pizzeria
+            DB_USER=admin
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            DB_ROOT_PASSWORD=${{ secrets.DB_ROOT_PASSWORD }}
+            APP_IMAGE=ghcr.io/${{ github.repository_owner }}/$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]'):latest
+            EOF
+            chmod 600 .env
+
+            # Authenticate Docker against GHCR so we can pull a private image if needed
+            echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Pull the freshly built image and recreate only what changed
+            docker compose pull app
+            docker compose up -d --remove-orphans
+
+            # Quick smoke test (waits up to ~30s for the API to answer)
+            for i in $(seq 1 15); do
+              if curl -fsS http://127.0.0.1/healthCheck; then
+                echo "Deploy OK"; exit 0
+              fi
+              sleep 2
+            done
+            echo "Service didn't become healthy in time"; exit 1
