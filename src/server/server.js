@@ -38,10 +38,94 @@ app.get("/", (req, res) => {
     background: white;
     border-radius: 12px;
     box-shadow: 0 10px 40px rgba(30, 39, 97, 0.08);
-    max-width: 720px;
+    max-width: 860px;
     width: 100%;
     overflow: hidden;
   }
+  .forms {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 640px) {
+    .forms { grid-template-columns: 1fr; }
+  }
+  .form-card {
+    background: var(--cream);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px;
+  }
+  .form-card h3 {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--navy);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .form-card .endpoint {
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+  .field { margin-bottom: 10px; }
+  .field label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .field input, .field select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-size: 13px;
+    font-family: inherit;
+    background: white;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .field input:focus, .field select:focus {
+    outline: none;
+    border-color: var(--coral);
+    box-shadow: 0 0 0 3px rgba(249, 97, 103, 0.15);
+  }
+  .btn {
+    width: 100%;
+    padding: 10px;
+    background: var(--navy);
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-top: 4px;
+  }
+  .btn:hover { background: #2A357A; }
+  .btn:disabled { background: var(--muted); cursor: not-allowed; }
+  .result {
+    margin-top: 12px;
+    padding: 10px;
+    border-radius: 5px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    display: none;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  .result.ok { display: block; background: #DCFCE7; color: #166534; border: 1px solid #86EFAC; }
+  .result.err { display: block; background: #FEE2E2; color: #991B1B; border: 1px solid #FCA5A5; }
   header {
     background: var(--navy);
     color: white;
@@ -175,6 +259,61 @@ app.get("/", (req, res) => {
         <li><span class="method crud">CRUD</span> <span class="path">/api/orders</span></li>
       </ul>
 
+      <h2>Probar la API en vivo</h2>
+      <div class="forms">
+
+        <div class="form-card">
+          <h3>📝 Crear cuenta</h3>
+          <div class="endpoint">POST /api/people/signup</div>
+          <form id="signupForm">
+            <div class="field">
+              <label>Email</label>
+              <input type="email" name="email" required placeholder="juan@pizza.com">
+            </div>
+            <div class="field">
+              <label>Contraseña</label>
+              <input type="password" name="password" required minlength="8" placeholder="mínimo 8 caracteres">
+            </div>
+            <div class="field">
+              <label>Nombre</label>
+              <input type="text" name="name" required placeholder="Juan">
+            </div>
+            <div class="field">
+              <label>Apellido</label>
+              <input type="text" name="lastname" required placeholder="García">
+            </div>
+            <div class="field">
+              <label>Rol</label>
+              <select name="role" required>
+                <option value="customer">customer</option>
+                <option value="cook">cook</option>
+                <option value="manager">manager</option>
+              </select>
+            </div>
+            <button class="btn" type="submit">Crear cuenta</button>
+            <div class="result" id="signupResult"></div>
+          </form>
+        </div>
+
+        <div class="form-card">
+          <h3>🔑 Iniciar sesión</h3>
+          <div class="endpoint">POST /api/people/login</div>
+          <form id="loginForm">
+            <div class="field">
+              <label>Email</label>
+              <input type="email" name="email" required placeholder="juan@pizza.com">
+            </div>
+            <div class="field">
+              <label>Contraseña</label>
+              <input type="password" name="password" required placeholder="••••••••">
+            </div>
+            <button class="btn" type="submit">Entrar</button>
+            <div class="result" id="loginResult"></div>
+          </form>
+        </div>
+
+      </div>
+
       <h2>Stack</h2>
       <div class="stack">
         <strong>Node.js 22</strong> · Express 5 · MariaDB 11 · nginx · Docker · GitHub Actions<br>
@@ -186,6 +325,55 @@ app.get("/", (req, res) => {
       Desplegado vía CI/CD — última imagen: <code>ghcr.io/juliovicente0/...:latest</code>
     </footer>
   </main>
+
+<script>
+  // Helper that posts a form to a JSON endpoint and renders the result
+  async function postForm(formId, resultId, endpoint) {
+    const form = document.getElementById(formId);
+    const result = document.getElementById(resultId);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector("button");
+      btn.disabled = true;
+      btn.textContent = "Enviando...";
+      result.className = "result";
+      result.textContent = "";
+
+      const data = Object.fromEntries(new FormData(form).entries());
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        const text = await res.text();
+        let body;
+        try { body = JSON.stringify(JSON.parse(text), null, 2); } catch { body = text; }
+
+        result.className = "result " + (res.ok ? "ok" : "err");
+        result.textContent = "HTTP " + res.status + "\\n\\n" + body;
+        if (res.ok && formId === "signupForm") form.reset();
+      } catch (err) {
+        result.className = "result err";
+        result.textContent = "Error de red: " + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = btn.textContent === "Enviando..."
+          ? (formId === "signupForm" ? "Crear cuenta" : "Entrar")
+          : btn.textContent;
+        if (btn.disabled === false && btn.textContent === "Enviando...") {
+          btn.textContent = formId === "signupForm" ? "Crear cuenta" : "Entrar";
+        }
+      }
+      // Reset button label safely
+      btn.textContent = formId === "signupForm" ? "Crear cuenta" : "Entrar";
+    });
+  }
+
+  postForm("signupForm", "signupResult", "/api/people/signup");
+  postForm("loginForm",  "loginResult",  "/api/people/login");
+</script>
+
 </body>
 </html>`);
 });
