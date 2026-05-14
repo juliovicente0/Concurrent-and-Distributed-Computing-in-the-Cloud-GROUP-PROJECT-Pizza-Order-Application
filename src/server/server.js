@@ -126,6 +126,41 @@ app.get("/", (req, res) => {
   }
   .result.ok { display: block; background: #DCFCE7; color: #166534; border: 1px solid #86EFAC; }
   .result.err { display: block; background: #FEE2E2; color: #991B1B; border: 1px solid #FCA5A5; }
+  .session {
+    background: var(--navy);
+    color: white;
+    padding: 12px 18px;
+    border-radius: 6px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+  }
+  .session.anon { background: #475569; }
+  .session .badge {
+    background: var(--coral);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .session button {
+    background: rgba(255,255,255,0.15);
+    color: white;
+    border: 1px solid rgba(255,255,255,0.3);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .session button:hover { background: rgba(255,255,255,0.25); }
+  .protected { opacity: 0.5; pointer-events: none; transition: opacity 0.2s; }
+  .protected.unlocked { opacity: 1; pointer-events: auto; }
   header {
     background: var(--navy);
     color: white;
@@ -259,6 +294,10 @@ app.get("/", (req, res) => {
         <li><span class="method crud">CRUD</span> <span class="path">/api/orders</span></li>
       </ul>
 
+      <div class="session anon" id="sessionBar">
+        <span><strong>Sesión:</strong> no autenticado — hacé login para activar el panel protegido</span>
+      </div>
+
       <h2>Probar la API en vivo</h2>
       <div class="forms">
 
@@ -314,6 +353,44 @@ app.get("/", (req, res) => {
 
       </div>
 
+      <h2>Endpoints protegidos · necesitan login</h2>
+      <div class="forms protected" id="protectedPanel">
+
+        <div class="form-card">
+          <h3>📋 Listar pizzerías</h3>
+          <div class="endpoint">GET /api/pizzaPlaces — Bearer token</div>
+          <p style="font-size: 11px; color: var(--muted); margin-bottom: 10px;">Devuelve todas las pizzerías registradas. Cualquier rol autenticado.</p>
+          <button class="btn" id="listBtn" type="button">Cargar listado</button>
+          <div class="result" id="listResult"></div>
+        </div>
+
+        <div class="form-card">
+          <h3>🏪 Crear pizzería</h3>
+          <div class="endpoint">POST /api/pizzaPlaces/create — solo manager</div>
+          <form id="createForm">
+            <div class="field">
+              <label>Nombre</label>
+              <input type="text" name="name" required placeholder="Pizzería Roma">
+            </div>
+            <div class="field">
+              <label>Dirección</label>
+              <input type="text" name="address" required placeholder="C/ Mayor 12">
+            </div>
+            <div class="field">
+              <label>Ciudad</label>
+              <input type="text" name="city" required placeholder="Zaragoza">
+            </div>
+            <div class="field">
+              <label>Email del manager</label>
+              <input type="email" name="manager_email" required placeholder="el email con el que te has logueado">
+            </div>
+            <button class="btn" type="submit">Crear pizzería</button>
+            <div class="result" id="createResult"></div>
+          </form>
+        </div>
+
+      </div>
+
       <h2>Stack</h2>
       <div class="stack">
         <strong>Node.js 22</strong> · Express 5 · MariaDB 11 · nginx · Docker · GitHub Actions<br>
@@ -327,51 +404,142 @@ app.get("/", (req, res) => {
   </main>
 
 <script>
-  // Helper that posts a form to a JSON endpoint and renders the result
-  async function postForm(formId, resultId, endpoint) {
-    const form = document.getElementById(formId);
-    const result = document.getElementById(resultId);
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const btn = form.querySelector("button");
-      btn.disabled = true;
-      btn.textContent = "Enviando...";
-      result.className = "result";
-      result.textContent = "";
+  // ====== Session state (in-memory; persists in sessionStorage so reload keeps the token) ======
+  let token = sessionStorage.getItem("jwt") || null;
+  let payload = null;
 
-      const data = Object.fromEntries(new FormData(form).entries());
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-        const text = await res.text();
-        let body;
-        try { body = JSON.stringify(JSON.parse(text), null, 2); } catch { body = text; }
-
-        result.className = "result " + (res.ok ? "ok" : "err");
-        result.textContent = "HTTP " + res.status + "\\n\\n" + body;
-        if (res.ok && formId === "signupForm") form.reset();
-      } catch (err) {
-        result.className = "result err";
-        result.textContent = "Error de red: " + err.message;
-      } finally {
-        btn.disabled = false;
-        btn.textContent = btn.textContent === "Enviando..."
-          ? (formId === "signupForm" ? "Crear cuenta" : "Entrar")
-          : btn.textContent;
-        if (btn.disabled === false && btn.textContent === "Enviando...") {
-          btn.textContent = formId === "signupForm" ? "Crear cuenta" : "Entrar";
-        }
-      }
-      // Reset button label safely
-      btn.textContent = formId === "signupForm" ? "Crear cuenta" : "Entrar";
-    });
+  function decodeJwt(t) {
+    try {
+      const b64 = t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      return JSON.parse(atob(b64));
+    } catch { return null; }
   }
 
-  postForm("signupForm", "signupResult", "/api/people/signup");
-  postForm("loginForm",  "loginResult",  "/api/people/login");
+  function renderSession() {
+    const bar = document.getElementById("sessionBar");
+    const panel = document.getElementById("protectedPanel");
+    if (token && payload) {
+      bar.classList.remove("anon");
+      bar.innerHTML =
+        '<span><strong>Sesión activa:</strong> ' + payload.email +
+        ' <span class="badge">' + payload.role + '</span></span>' +
+        '<button id="logoutBtn" type="button">Cerrar sesión</button>';
+      document.getElementById("logoutBtn").onclick = logout;
+      panel.classList.add("unlocked");
+      // Pre-fill manager_email in create form
+      const me = document.querySelector('#createForm input[name="manager_email"]');
+      if (me) me.value = payload.email;
+    } else {
+      bar.classList.add("anon");
+      bar.innerHTML = '<span><strong>Sesión:</strong> no autenticado — hacé login para activar el panel protegido</span>';
+      panel.classList.remove("unlocked");
+    }
+  }
+
+  function setToken(t) {
+    token = t;
+    payload = t ? decodeJwt(t) : null;
+    if (t) sessionStorage.setItem("jwt", t); else sessionStorage.removeItem("jwt");
+    renderSession();
+  }
+  function logout() { setToken(null); }
+
+  // ====== Generic helper: render a fetch result into a .result element ======
+  function renderResult(el, res, text) {
+    let body;
+    try { body = JSON.stringify(JSON.parse(text), null, 2); } catch { body = text; }
+    el.className = "result " + (res.ok ? "ok" : "err");
+    el.textContent = "HTTP " + res.status + "\\n\\n" + body;
+  }
+
+  // ====== Signup form ======
+  document.getElementById("signupForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const result = document.getElementById("signupResult");
+    const data = Object.fromEntries(new FormData(e.target).entries());
+    try {
+      const res = await fetch("/api/people/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      const text = await res.text();
+      renderResult(result, res, text);
+      if (res.ok) e.target.reset();
+    } catch (err) {
+      result.className = "result err";
+      result.textContent = "Error de red: " + err.message;
+    }
+  });
+
+  // ====== Login form — captures token on success ======
+  document.getElementById("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const result = document.getElementById("loginResult");
+    const data = Object.fromEntries(new FormData(e.target).entries());
+    try {
+      const res = await fetch("/api/people/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      const text = await res.text();
+      renderResult(result, res, text);
+      if (res.ok) {
+        try {
+          const json = JSON.parse(text);
+          if (json.token) setToken(json.token);
+        } catch {}
+      }
+    } catch (err) {
+      result.className = "result err";
+      result.textContent = "Error de red: " + err.message;
+    }
+  });
+
+  // ====== List pizzerias ======
+  document.getElementById("listBtn").addEventListener("click", async () => {
+    const result = document.getElementById("listResult");
+    if (!token) { result.className = "result err"; result.textContent = "Hace falta login primero."; return; }
+    try {
+      const res = await fetch("/api/pizzaPlaces", {
+        headers: { "Authorization": "Bearer " + token },
+      });
+      const text = await res.text();
+      renderResult(result, res, text);
+    } catch (err) {
+      result.className = "result err";
+      result.textContent = "Error de red: " + err.message;
+    }
+  });
+
+  // ====== Create pizzeria (manager only) ======
+  document.getElementById("createForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const result = document.getElementById("createResult");
+    if (!token) { result.className = "result err"; result.textContent = "Hace falta login primero."; return; }
+    const data = Object.fromEntries(new FormData(e.target).entries());
+    try {
+      const res = await fetch("/api/pizzaPlaces/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+        },
+        body: JSON.stringify(data),
+      });
+      const text = await res.text();
+      renderResult(result, res, text);
+      if (res.ok) { e.target.reset(); if (payload) e.target.manager_email.value = payload.email; }
+    } catch (err) {
+      result.className = "result err";
+      result.textContent = "Error de red: " + err.message;
+    }
+  });
+
+  // ====== Init ======
+  if (token) payload = decodeJwt(token);
+  renderSession();
 </script>
 
 </body>
